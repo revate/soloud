@@ -119,6 +119,16 @@ namespace SoLoud
 			return FILE_LOAD_FAILED;
 		}
 
+		// REVATE (fuzz NOTE-C): cap the decoded-sample allocation. A malformed
+		// header can declare a huge frame count -> multi-GB `new float[]` (OOM),
+		// and the (unsigned int) cast below can truncate -> short/inconsistent
+		// buffer. Bound total floats to ~1 GB (256M * 4 bytes).
+		if ((drwav_uint64)samples * decoder.channels > 256ull * 1024 * 1024)
+		{
+			drwav_uninit(&decoder);
+			return FILE_LOAD_FAILED;
+		}
+
 		mData = new float[(unsigned int)(samples * decoder.channels)];
 		mBaseSamplerate = (float)decoder.sampleRate;
 		mSampleCount = (unsigned int)samples;
@@ -166,6 +176,13 @@ namespace SoLoud
 		{
 			mChannels = info.channels;
 		}
+		// REVATE (fuzz NOTE-C): reject non-positive / oversized sample counts
+		// before the allocation (bound total floats to ~1 GB).
+		if (samples <= 0 || (long long)samples * mChannels > 256ll * 1024 * 1024)
+		{
+			stb_vorbis_close(vorbis);
+			return FILE_LOAD_FAILED;
+		}
 		mData = new float[samples * mChannels];
 		memset(mData, 0, samples * mChannels * sizeof(float));
 		mSampleCount = samples;
@@ -207,11 +224,17 @@ namespace SoLoud
 			return FILE_LOAD_FAILED;
 		}
 
+		// REVATE (fuzz NOTE-C): cap decoded-sample allocation (~1 GB bound).
+		if ((drmp3_uint64)samples * decoder.channels > 256ull * 1024 * 1024)
+		{
+			drmp3_uninit(&decoder);
+			return FILE_LOAD_FAILED;
+		}
 		mData = new float[(unsigned int)(samples * decoder.channels)];
 		mBaseSamplerate = (float)decoder.sampleRate;
 		mSampleCount = (unsigned int)samples;
 		mChannels = decoder.channels;
-		drmp3_seek_to_pcm_frame(&decoder, 0); 
+		drmp3_seek_to_pcm_frame(&decoder, 0);
 
 		unsigned int i, j, k;
 		for (i = 0; i<mSampleCount; i += 512)
@@ -249,6 +272,12 @@ namespace SoLoud
 			return FILE_LOAD_FAILED;
 		}
 
+		// REVATE (fuzz NOTE-C): cap decoded-sample allocation (~1 GB bound).
+		if ((drflac_uint64)samples * decoder->channels > 256ull * 1024 * 1024)
+		{
+			drflac_close(decoder);
+			return FILE_LOAD_FAILED;
+		}
 		mData = new float[(unsigned int)(samples * decoder->channels)];
 		mBaseSamplerate = (float)decoder->sampleRate;
 		mSampleCount = (unsigned int)samples;
