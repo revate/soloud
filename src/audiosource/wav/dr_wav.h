@@ -3215,10 +3215,23 @@ DRWAV_PRIVATE drwav_bool32 drwav_init__internal(drwav* pWav, drwav_chunk_proc on
     pWav->translatedFormatTag = translatedFormatTag;
     pWav->dataChunkDataSize   = dataChunkSize;
 
+    /* REVATE (fuzz BUG-5): reject a malformed fmt chunk before the divisions
+       below (dataChunkSize / blockAlign, ... / channels, and via
+       drwav_get_bytes_per_pcm_frame). A zero channels/blockAlign/bitsPerSample
+       caused a divide-by-zero (SIGFPE). */
+    if (fmt.channels == 0 || fmt.blockAlign == 0 || fmt.bitsPerSample == 0) {
+        return DRWAV_FALSE;
+    }
+
     if (sampleCountFromFactChunk != 0) {
         pWav->totalPCMFrameCount = sampleCountFromFactChunk;
     } else {
-        pWav->totalPCMFrameCount = dataChunkSize / drwav_get_bytes_per_pcm_frame(pWav);
+        /* REVATE (fuzz BUG-5): drwav_get_bytes_per_pcm_frame can still be 0
+           even with non-zero channels/bits (e.g. 4-bit mono: 1*4/8 == 0),
+           which divides-by-zero here (SIGFPE). Guard the division; the ADPCM
+           branches below recompute via the already-guarded blockAlign. */
+        drwav_uint32 drwavBytesPerFrame = drwav_get_bytes_per_pcm_frame(pWav);
+        pWav->totalPCMFrameCount = (drwavBytesPerFrame == 0) ? 0 : (dataChunkSize / drwavBytesPerFrame);
 
         if (pWav->translatedFormatTag == DR_WAVE_FORMAT_ADPCM) {
             drwav_uint64 totalBlockHeaderSizeInBytes;

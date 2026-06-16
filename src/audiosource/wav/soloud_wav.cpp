@@ -108,6 +108,17 @@ namespace SoLoud
 			return FILE_LOAD_FAILED;
 		}
 
+		// REVATE (fuzz BUG-4): the per-block `tmp[512 * MAX_CHANNELS]` stack
+		// buffer below is indexed by decoder.channels, and
+		// drwav_read_pcm_frames_f32 writes blockSize*channels floats into it —
+		// a WAV declaring more channels than MAX_CHANNELS overflows the stack
+		// (stack-buffer-overflow). Reject out-of-range channel counts up front.
+		if (decoder.channels == 0 || decoder.channels > MAX_CHANNELS)
+		{
+			drwav_uninit(&decoder);
+			return FILE_LOAD_FAILED;
+		}
+
 		mData = new float[(unsigned int)(samples * decoder.channels)];
 		mBaseSamplerate = (float)decoder.sampleRate;
 		mSampleCount = (unsigned int)samples;
