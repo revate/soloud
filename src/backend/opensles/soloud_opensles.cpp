@@ -182,6 +182,13 @@ namespace SoLoud
 	{
 		BackendData *data = new BackendData();
 
+		// [revate] aChannels arrives UNRESOLVED from Soloud::init (0 = "auto"
+		// is passed straight through, unlike samplerate/buffer). numChannels=0
+		// makes CreateAudioPlayer below fail, and the unchecked failure used
+		// to null-deref. Default to stereo.
+		if (aChannels == 0)
+			aChannels = 2;
+
 		// Allocate output buffer to mix into.
 		data->bufferSize = aBuffer;
 		data->channels = aChannels;
@@ -263,14 +270,31 @@ namespace SoLoud
 			const SLInterfaceID ids[] = { SL_IID_VOLUME, SL_IID_ANDROIDSIMPLEBUFFERQUEUE };
 			const SLboolean req[] = { SL_BOOLEAN_TRUE, SL_BOOLEAN_TRUE };
  
-			(*data->engine)->CreateAudioPlayer(data->engine, &data->playerObj, &src, &data->dstDataSink, sizeof(ids) / sizeof(ids[0]), ids, req);
-		 
-			(*data->playerObj)->Realize(data->playerObj, SL_BOOLEAN_FALSE);
-	 
+			// [revate] Checked: a failed CreateAudioPlayer (bad PCM format,
+			// device in use, ...) used to leave playerObj NULL and the next
+			// line dereferenced it — a native SIGSEGV instead of "no audio"
+			// (crashed live on Android with numChannels=0).
+			if((*data->engine)->CreateAudioPlayer(data->engine, &data->playerObj, &src, &data->dstDataSink, sizeof(ids) / sizeof(ids[0]), ids, req) != SL_RESULT_SUCCESS
+				|| data->playerObj == NULL)
+			{
+				LOG_ERROR( "Failed to create audio player." );
+				return UNKNOWN_ERROR;
+			}
+
+			if((*data->playerObj)->Realize(data->playerObj, SL_BOOLEAN_FALSE) != SL_RESULT_SUCCESS)
+			{
+				LOG_ERROR( "Failed to realize audio player." );
+				return UNKNOWN_ERROR;
+			}
+
 			(*data->playerObj)->GetInterface(data->playerObj, SL_IID_PLAY, &data->player);
 			(*data->playerObj)->GetInterface(data->playerObj, SL_IID_VOLUME, &data->playerVol);
- 
-			(*data->playerObj)->GetInterface(data->playerObj, SL_IID_ANDROIDSIMPLEBUFFERQUEUE, &data->playerBufferQueue);
+
+			if((*data->playerObj)->GetInterface(data->playerObj, SL_IID_ANDROIDSIMPLEBUFFERQUEUE, &data->playerBufferQueue) != SL_RESULT_SUCCESS)
+			{
+				LOG_ERROR( "Failed to get buffer queue interface." );
+				return UNKNOWN_ERROR;
+			}
 		}
 
 		aSoloud->mBackendData = data;		// Must be set before callback
