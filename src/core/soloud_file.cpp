@@ -257,6 +257,11 @@ extern "C"
 	int Soloud_Filehack_fread(void *dst, int s, int c, Soloud_Filehack *f)
 	{
 		SoLoud::File *fp = (SoLoud::File *)f;
+		// revate: stb_vorbis asks for 0-byte reads (getn(z, data, 0) on a 4-byte "OggS"
+		// file): s == 0 divided by zero (SIGFPE, sound fuzz 2026-10-28). Like C fread, a
+		// zero size or count reads nothing and returns 0.
+		if (s <= 0 || c <= 0)
+			return 0;
 		return fp->read((unsigned char*)dst, s*c) / s;
 
 	}

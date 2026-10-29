@@ -123,7 +123,12 @@ namespace SoLoud
 		// header can declare a huge frame count -> multi-GB `new float[]` (OOM),
 		// and the (unsigned int) cast below can truncate -> short/inconsistent
 		// buffer. Bound total floats to ~1 GB (256M * 4 bytes).
-		if ((drwav_uint64)samples * decoder.channels > 256ull * 1024 * 1024)
+		// revate: and a WAV cannot hold more samples than its bytes do: every dr_wav format
+		// takes at least 4 bits per sample (IMA/MS ADPCM; PCM, float, a-law, u-law 8+), so a
+		// data/fact chunk claiming more than 2 per file byte is a lie. A 173-byte file asked
+		// for 778 MB and an 828-byte one for 1 GB under the cap above (sound fuzz oom, 2026-10-28).
+		if ((drwav_uint64)samples * decoder.channels > 256ull * 1024 * 1024 ||
+			(drwav_uint64)samples * decoder.channels > 2ull * aReader->length() + 4096)
 		{
 			drwav_uninit(&decoder);
 			return FILE_LOAD_FAILED;

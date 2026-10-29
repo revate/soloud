@@ -427,11 +427,16 @@ namespace SoLoud
 		if (!drwav_init(&decoder, drwav_read_func, drwav_seek_func, (void*)fp, NULL))
 			return FILE_LOAD_FAILED;
 
-		mChannels = decoder.channels;
-		if (mChannels > MAX_CHANNELS)
+		// revate: getAudio's WAV case reads blockSize * decoder channels floats into its
+		// tmp[512 * MAX_CHANNELS] stack buffer, so a WAV claiming more than MAX_CHANNELS
+		// overflowed it on the mixer thread (64 channels, sound fuzz 2026-10-28). Refuse it
+		// at load like Wav::loadwav does, instead of clamping mChannels.
+		if (decoder.channels == 0 || decoder.channels > MAX_CHANNELS)
 		{
-			mChannels = MAX_CHANNELS;
+			drwav_uninit(&decoder);
+			return FILE_LOAD_FAILED;
 		}
+		mChannels = decoder.channels;
 
 		mBaseSamplerate = (float)decoder.sampleRate;
 		mSampleCount = (unsigned int)decoder.totalPCMFrameCount;
