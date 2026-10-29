@@ -5565,6 +5565,15 @@ DRWAV_PRIVATE drwav_uint64 drwav_read_pcm_frames_s16__msadpcm(drwav* pWav, drwav
                 }
                 pWav->msadpcm.bytesRemainingInBlock = pWav->fmt.blockAlign - sizeof(header);
 
+                /* revate: the predictor byte indexes coeff1Table/coeff2Table (7 entries) below; any
+                   0..255 value read past them (ASan global-buffer-overflow, sound fuzz 2026-10-29).
+                   Same "invalid data" exit as the IMA step-index check. */
+                if (header[0] >= 7) {
+                    pWav->onSeek(pWav->pUserData, pWav->msadpcm.bytesRemainingInBlock, drwav_seek_origin_current);
+                    pWav->msadpcm.bytesRemainingInBlock = 0;
+                    return totalFramesRead; /* Invalid data. */
+                }
+
                 pWav->msadpcm.predictor[0]     = header[0];
                 pWav->msadpcm.delta[0]         = drwav_bytes_to_s16(header + 1);
                 pWav->msadpcm.prevFrames[0][1] = (drwav_int32)drwav_bytes_to_s16(header + 3);
@@ -5579,6 +5588,13 @@ DRWAV_PRIVATE drwav_uint64 drwav_read_pcm_frames_s16__msadpcm(drwav* pWav, drwav
                     return totalFramesRead;
                 }
                 pWav->msadpcm.bytesRemainingInBlock = pWav->fmt.blockAlign - sizeof(header);
+
+                /* revate: see the mono case: predictor bytes index the 7-entry coeff tables. */
+                if (header[0] >= 7 || header[1] >= 7) {
+                    pWav->onSeek(pWav->pUserData, pWav->msadpcm.bytesRemainingInBlock, drwav_seek_origin_current);
+                    pWav->msadpcm.bytesRemainingInBlock = 0;
+                    return totalFramesRead; /* Invalid data. */
+                }
 
                 pWav->msadpcm.predictor[0] = header[0];
                 pWav->msadpcm.predictor[1] = header[1];
