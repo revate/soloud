@@ -183,7 +183,11 @@ namespace SoLoud
 		}
 		// REVATE (fuzz NOTE-C): reject non-positive / oversized sample counts
 		// before the allocation (bound total floats to ~1 GB).
-		if (samples <= 0 || (long long)samples * mChannels > 256ll * 1024 * 1024)
+		// REVATE (ogg audit 2026-11-19): the sample count is the file's CLAIMED last granule;
+		// refuse a claim above 1024 samples per file byte (even silence-only Vorbis packs far
+		// looser), so a 200-byte file cannot ask for a 1 GB buffer.
+		if (samples <= 0 || (long long)samples * mChannels > 256ll * 1024 * 1024
+			|| (long long)samples > 1024ll * aReader->length())
 		{
 			stb_vorbis_close(vorbis);
 			return FILE_LOAD_FAILED;
@@ -196,7 +200,11 @@ namespace SoLoud
 		{
 			float **outputs;
             int n = stb_vorbis_get_frame_float(vorbis, NULL, &outputs);
-			if (n == 0)
+			// REVATE (ogg audit 2026-11-19): the decoded stream may be longer than the claimed
+			// granule sized mData; never copy past mSampleCount (heap overflow with hostile files).
+			if (n > (int)(mSampleCount - samples))
+				n = (int)(mSampleCount - samples);
+			if (n <= 0)
             {
 				break;
             }

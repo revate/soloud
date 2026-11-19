@@ -757,8 +757,8 @@ typedef struct
    uint16 coupling_steps;
    MappingChannel *chan;
    uint8  submaps;
-   uint8  submap_floor[15]; // varies
-   uint8  submap_residue[15]; // varies
+   uint8  submap_floor[16]; // varies (submaps is 1..16: CVE-2023-45678)
+   uint8  submap_residue[16]; // varies
 } Mapping;
 
 typedef struct
@@ -951,11 +951,14 @@ static void *make_block_array(void *mem, int count, int size)
 
 static void *setup_malloc(vorb *f, int sz)
 {
+   // REVATE (GHSL-2023-165..172 / CVE-2023-45676): a negative or near-INT_MAX size
+   // wrapped in sz+7 and passed the alloc_buffer check; refuse it up front.
+   if (sz <= 0 || sz > INT_MAX - 7) return NULL;
    sz = (sz+7) & ~7; // round up to nearest 8 for alignment of future allocs.
    f->setup_memory_required += sz;
    if (f->alloc.alloc_buffer) {
       void *p = (char *) f->alloc.alloc_buffer + f->setup_offset;
-      if (f->setup_offset + sz > f->temp_offset) return NULL;
+      if (f->temp_offset < sz || f->temp_offset - sz < f->setup_offset) return NULL;
       f->setup_offset += sz;
       return p;
    }
@@ -970,9 +973,10 @@ static void setup_free(vorb *f, void *p)
 
 static void *setup_temp_malloc(vorb *f, int sz)
 {
+   if (sz <= 0 || sz > INT_MAX - 7) return NULL; // REVATE: same guard as setup_malloc
    sz = (sz+7) & ~7; // round up to nearest 8 for alignment of future allocs.
    if (f->alloc.alloc_buffer) {
-      if (f->temp_offset - sz < f->setup_offset) return NULL;
+      if (f->temp_offset < sz || f->temp_offset - sz < f->setup_offset) return NULL;
       f->temp_offset -= sz;
       return (char *) f->alloc.alloc_buffer + f->temp_offset;
    }
@@ -3102,7 +3106,7 @@ static int do_floor(vorb *f, Mapping *map, int i, int n, float *target, YTYPE *f
       if (lx < n2) {
          // optimization of: draw_line(target, lx,ly, n,ly, n2);
          for (j=lx; j < n2; ++j)
-            LINE_OP(target[j], inverse_db_table[ly]);
+            LINE_OP(target[j], inverse_db_table[ly & 255]); // REVATE: upstream OOB-read fix
          CHECK(f);
       }
    }
@@ -3581,9 +3585,11 @@ static int is_whole_packet_present(stb_vorbis *f)
 
 static int start_decoder(vorb *f)
 {
+#define CODEBOOK_LIMIT (1 << 18)
    uint8 header[6], x,y;
    int len,i,j,k, max_submaps = 0;
    int longest_floorlist=0;
+   unsigned int max_blocksize, max_vector;
 
    // first page, first packet
    f->first_decode = TRUE;
@@ -3631,10 +3637,13 @@ static int start_decoder(vorb *f)
       log1 = x >> 4;
       f->blocksize_0 = 1 << log0;
       f->blocksize_1 = 1 << log1;
-      if (log0 < 6 || log0 > 13)                       return error(f, VORBIS_invalid_setup);
-      if (log1 < 6 || log1 > 13)                       return error(f, VORBIS_invalid_setup);
+      // REVATE (upstream): actual min is 6, but libvorbis never emits below 8 and that path is buggy
+      if (log0 < 8 || log0 > 13)                       return error(f, VORBIS_invalid_setup);
+      if (log1 < 8 || log1 > 13)                       return error(f, VORBIS_invalid_setup);
       if (log0 > log1)                                 return error(f, VORBIS_invalid_setup);
    }
+   max_blocksize = f->blocksize_0 > f->blocksize_1 ? f->blocksize_0 : f->blocksize_1;
+   max_vector = max_blocksize * f->channels; // residue size is ch * blocksize, at most 16 * 8192
 
    // framing_flag
    x = get8(f);
@@ -3652,6 +3661,8 @@ static int start_decoder(vorb *f)
    if (!vorbis_validate(header))                    return error(f, VORBIS_invalid_setup);
    //file vendor
    len = get32_packet(f);
+   // REVATE (CVE-2023-45675/45677): negative len wrote at a negative index, INT_MAX wrapped len+1 to 0.
+   if (len < 0 || len == INT_MAX)                   return error(f, VORBIS_invalid_setup);
    f->vendor = (char*)setup_malloc(f, sizeof(char) * (len+1));
    if (f->vendor == NULL)                           return error(f, VORBIS_outofmem);
    for(i=0; i < len; ++i) {
@@ -3663,12 +3674,21 @@ static int start_decoder(vorb *f)
    f->comment_list = NULL;
    if (f->comment_list_length > 0)
    {
+      // REVATE (CVE-2023-45681): sizeof(char*) * count overflowed int -> tiny alloc, OOB writes.
+      if (f->comment_list_length > INT_MAX / (int)sizeof(char*)) return error(f, VORBIS_invalid_setup);
+      // every comment costs at least its 4 length bytes: a count above bytes/4 is a lie.
+      if (f->stream_len && (uint32)f->comment_list_length > f->stream_len / 4) return error(f, VORBIS_invalid_setup);
       f->comment_list = (char**) setup_malloc(f, sizeof(char*) * (f->comment_list_length));
-      if (f->comment_list == NULL)                  return error(f, VORBIS_outofmem);
+      if (f->comment_list == NULL) { f->comment_list_length = 0; return error(f, VORBIS_outofmem); }
+      // CVE-2023-45679: an early return left later entries uninitialised for vorbis_deinit to free.
+      memset(f->comment_list, 0, sizeof(char*) * f->comment_list_length);
    }
+   else
+      f->comment_list_length = 0;
 
    for(i=0; i < f->comment_list_length; ++i) {
       len = get32_packet(f);
+      if (len < 0 || len == INT_MAX)                return error(f, VORBIS_invalid_setup);
       f->comment_list[i] = (char*)setup_malloc(f, sizeof(char) * (len+1));
       if (f->comment_list[i] == NULL)               return error(f, VORBIS_outofmem);
 
@@ -3737,6 +3757,9 @@ static int start_decoder(vorb *f)
       c->sparse = ordered ? 0 : get_bits(f,1);
 
       if (c->dimensions == 0 && c->entries != 0)    return error(f, VORBIS_invalid_setup);
+      // REVATE (upstream start_decoder bounds): entries*dimensions capped, no reading past EOF.
+      if (c->entries && CODEBOOK_LIMIT / c->entries < c->dimensions) return error(f, VORBIS_invalid_setup);
+      if (f->valid_bits < 0)                        return error(f, VORBIS_unexpected_eof);
 
       if (c->sparse)
          lengths = (uint8 *) setup_temp_malloc(f, c->entries);
@@ -3935,6 +3958,7 @@ static int start_decoder(vorb *f)
    }
 
    // Floors
+   if (f->valid_bits < 0) return error(f, VORBIS_unexpected_eof); // REVATE: upstream EOF checks
    f->floor_count = get_bits(f, 6)+1;
    f->floor_config = (Floor *)  setup_malloc(f, f->floor_count * sizeof(*f->floor_config));
    if (f->floor_config == NULL) return error(f, VORBIS_outofmem);
@@ -4011,6 +4035,7 @@ static int start_decoder(vorb *f)
    }
 
    // Residue
+   if (f->valid_bits < 0) return error(f, VORBIS_unexpected_eof);
    f->residue_count = get_bits(f, 6)+1;
    f->residue_config = (Residue *) setup_malloc(f, f->residue_count * sizeof(f->residue_config[0]));
    if (f->residue_config == NULL) return error(f, VORBIS_outofmem);
@@ -4023,7 +4048,10 @@ static int start_decoder(vorb *f)
       r->begin = get_bits(f, 24);
       r->end = get_bits(f, 24);
       if (r->end < r->begin) return error(f, VORBIS_invalid_setup);
+      if (r->end > max_vector) return error(f, VORBIS_invalid_setup); // REVATE: upstream residue bounds
       r->part_size = get_bits(f,24)+1;
+      if (r->part_size > max_vector) return error(f, VORBIS_invalid_setup);
+      if (f->valid_bits < 0) return error(f, VORBIS_unexpected_eof);
       r->classifications = get_bits(f,6)+1;
       r->classbook = get_bits(f,8);
       if (r->classbook >= f->codebook_count) return error(f, VORBIS_invalid_setup);
@@ -4085,6 +4113,7 @@ static int start_decoder(vorb *f)
          for (k=0; k < m->coupling_steps; ++k) {
             m->chan[k].magnitude = get_bits(f, ilog(f->channels-1));
             m->chan[k].angle = get_bits(f, ilog(f->channels-1));
+            if (f->valid_bits < 0)                          return error(f, VORBIS_unexpected_eof);
             if (m->chan[k].magnitude >= f->channels)        return error(f, VORBIS_invalid_setup);
             if (m->chan[k].angle     >= f->channels)        return error(f, VORBIS_invalid_setup);
             if (m->chan[k].magnitude == m->chan[k].angle)   return error(f, VORBIS_invalid_setup);
@@ -4121,6 +4150,7 @@ static int start_decoder(vorb *f)
       m->windowtype = get_bits(f,16);
       m->transformtype = get_bits(f,16);
       m->mapping = get_bits(f,8);
+      if (f->valid_bits < 0)                  return error(f, VORBIS_unexpected_eof);
       if (m->windowtype != 0)                 return error(f, VORBIS_invalid_setup);
       if (m->transformtype != 0)              return error(f, VORBIS_invalid_setup);
       if (m->mapping >= f->mapping_count)     return error(f, VORBIS_invalid_setup);
@@ -4163,7 +4193,7 @@ static int start_decoder(vorb *f)
       int i,max_part_read=0;
       for (i=0; i < f->residue_count; ++i) {
          Residue *r = f->residue_config + i;
-         unsigned int actual_size = f->blocksize_1 / 2;
+         unsigned int actual_size = (f->blocksize_1 * (f->residue_types[i] == 2 ? f->channels : 1)) / 2;
          unsigned int limit_r_begin = r->begin < actual_size ? r->begin : actual_size;
          unsigned int limit_r_end   = r->end   < actual_size ? r->end   : actual_size;
          int n_read = limit_r_end - limit_r_begin;
@@ -4212,10 +4242,12 @@ static void vorbis_deinit(stb_vorbis *p)
    int i,j;
 
    setup_free(p, p->vendor);
-   for (i=0; i < p->comment_list_length; ++i) {
-      setup_free(p, p->comment_list[i]);
+   if (p->comment_list) { // CVE-2023-45680: a failed list alloc left the length set
+      for (i=0; i < p->comment_list_length; ++i) {
+         setup_free(p, p->comment_list[i]);
+      }
+      setup_free(p, p->comment_list);
    }
-   setup_free(p, p->comment_list);
 
    if (p->residue_config) {
       for (i=0; i < p->residue_count; ++i) {

@@ -465,6 +465,11 @@ namespace SoLoud
 		stb_vorbis_close(v);
 		mFiletype = WAVSTREAM_OGG;
 
+		// REVATE (ogg audit 2026-11-19): samples is the file's CLAIMED last granule.
+		// No buffer is sized from it here (getAudio streams frame by frame and getOggData
+		// clamps), but refuse a negative/absurd claim so mSampleCount stays sane.
+		if (samples < 0)
+			samples = 0;
 		mSampleCount = samples;
 
 		return 0;
