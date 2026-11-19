@@ -3663,10 +3663,17 @@ static int start_decoder(vorb *f)
    len = get32_packet(f);
    // REVATE (CVE-2023-45675/45677): negative len wrote at a negative index, INT_MAX wrapped len+1 to 0.
    if (len < 0 || len == INT_MAX)                   return error(f, VORBIS_invalid_setup);
+   // REVATE (fuzz 2026-11-19, 36 timeouts): a claimed string length is a 32-bit lie the loop
+   // below walked byte by byte past the end of the packet (get8_packet keeps returning EOP),
+   // 1.7 G iterations + a 1.7 GB malloc from a 2 KB file. A string cannot be longer than the
+   // stream, and the loop stops at the first EOP.
+   if (f->stream_len && (uint32)len > f->stream_len)  return error(f, VORBIS_invalid_setup);
    f->vendor = (char*)setup_malloc(f, sizeof(char) * (len+1));
    if (f->vendor == NULL)                           return error(f, VORBIS_outofmem);
    for(i=0; i < len; ++i) {
-      f->vendor[i] = get8_packet(f);
+      int c = get8_packet(f);
+      if (c == EOP)                                 return error(f, VORBIS_invalid_setup);
+      f->vendor[i] = (char)c;
    }
    f->vendor[len] = (char)'\0';
    //user comments
@@ -3689,11 +3696,14 @@ static int start_decoder(vorb *f)
    for(i=0; i < f->comment_list_length; ++i) {
       len = get32_packet(f);
       if (len < 0 || len == INT_MAX)                return error(f, VORBIS_invalid_setup);
+      if (f->stream_len && (uint32)len > f->stream_len) return error(f, VORBIS_invalid_setup); // REVATE: see vendor
       f->comment_list[i] = (char*)setup_malloc(f, sizeof(char) * (len+1));
       if (f->comment_list[i] == NULL)               return error(f, VORBIS_outofmem);
 
       for(j=0; j < len; ++j) {
-         f->comment_list[i][j] = get8_packet(f);
+         int c = get8_packet(f);
+         if (c == EOP)                              return error(f, VORBIS_invalid_setup);
+         f->comment_list[i][j] = (char)c;
       }
       f->comment_list[i][len] = (char)'\0';
    }
