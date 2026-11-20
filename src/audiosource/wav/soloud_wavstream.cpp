@@ -673,6 +673,10 @@ namespace SoLoud
 		{
 			res = FILE_LOAD_FAILED;
 		}
+		// REVATE (fuzz 2026-11-19): see Wav::testAndLoadFile - an absurd header sample rate makes the
+		// mixer pull millions of source samples per block; refuse above 384 kHz for every codec.
+		if (res == SO_NO_ERROR && (mBaseSamplerate < 1.0f || mBaseSamplerate > 384000.0f))
+			res = FILE_LOAD_FAILED;
 		return res;
 	}
 

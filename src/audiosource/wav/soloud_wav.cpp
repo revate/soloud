@@ -323,25 +323,35 @@ namespace SoLoud
 		mSampleCount = 0;
 		mChannels = 1;
         int tag = aReader->read32();
-		if (tag == MAKEDWORD('O','g','g','S')) 
+		result res = FILE_LOAD_FAILED;
+		if (tag == MAKEDWORD('O','g','g','S'))
         {
-			return loadogg(aReader);
+			res = loadogg(aReader);
 
-		} 
-        else if (tag == MAKEDWORD('R','I','F','F')) 
+		}
+        else if (tag == MAKEDWORD('R','I','F','F'))
         {
-			return loadwav(aReader);
+			res = loadwav(aReader);
 		}
 		else if (tag == MAKEDWORD('f', 'L', 'a', 'C'))
 		{
-			return loadflac(aReader);
+			res = loadflac(aReader);
 		}
 		else if (loadmp3(aReader) == SO_NO_ERROR)
 		{
-			return SO_NO_ERROR;
+			res = SO_NO_ERROR;
 		}
-
-		return FILE_LOAD_FAILED;
+		// REVATE (fuzz 2026-11-19): every header's sample rate is a 32-bit field the mixer resamples
+		// FROM, at a cost linear in it (a 32 MHz Vorbis claim = 1.5 M source samples per 2048-sample
+		// block, 10 s timeout). No real format is above 384 kHz; refuse the rest at load for all codecs.
+		if (res == SO_NO_ERROR && (mBaseSamplerate < 1.0f || mBaseSamplerate > 384000.0f))
+		{
+			delete[] mData;
+			mData = 0;
+			mSampleCount = 0;
+			return FILE_LOAD_FAILED;
+		}
+		return res;
     }
 
 	result Wav::load(const char *aFilename)
