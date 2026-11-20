@@ -33,6 +33,17 @@ freely, subject to the following restrictions:
 #include "dr_wav.h"
 #include "dr_flac.h"
 
+// REVATE (ogg/opus audit 2026-11-20): a decoder that hands back fewer frames than the header claimed
+// (cut or corrupt file) used to leave the tail of mData uninitialised: the engine played heap bytes
+// and the upload converter encoded them into the published Opus. Keep only what was decoded: pack the
+// planar channels down to the new stride and shrink mSampleCount.
+static void shrinkPlanar(float* aData, unsigned int aChannels, unsigned int aOld, unsigned int aNew)
+{
+	unsigned int k;
+	for (k = 1; k < aChannels; k++)
+		memmove(aData + k * aNew, aData + k * aOld, sizeof(float) * aNew);
+}
+
 namespace SoLoud
 {
 	WavInstance::WavInstance(Wav *aParent)
@@ -144,13 +155,19 @@ namespace SoLoud
 		{
 			float tmp[512 * MAX_CHANNELS];
 			unsigned int blockSize = (mSampleCount - i) > 512 ? 512 : mSampleCount - i;
-			drwav_read_pcm_frames_f32(&decoder, blockSize, tmp);
-			for (j = 0; j < blockSize; j++)
+			unsigned int got = (unsigned int)drwav_read_pcm_frames_f32(&decoder, blockSize, tmp);
+			for (j = 0; j < got; j++)
 			{
 				for (k = 0; k < decoder.channels; k++)
 				{
 					mData[k * mSampleCount + i + j] = tmp[j * decoder.channels + k];
 				}
+			}
+			if (got < blockSize)
+			{
+				shrinkPlanar(mData, decoder.channels, mSampleCount, i + got);
+				mSampleCount = i + got;
+				break;
 			}
 		}
 		drwav_uninit(&decoder);
@@ -254,13 +271,19 @@ namespace SoLoud
 		{
 			float tmp[512 * MAX_CHANNELS];
 			unsigned int blockSize = (mSampleCount - i) > 512 ? 512 : mSampleCount - i;
-			drmp3_read_pcm_frames_f32(&decoder, blockSize, tmp);
-			for (j = 0; j < blockSize; j++) 
+			unsigned int got = (unsigned int)drmp3_read_pcm_frames_f32(&decoder, blockSize, tmp);
+			for (j = 0; j < got; j++) 
 			{
 				for (k = 0; k < decoder.channels; k++) 
 				{
 					mData[k * mSampleCount + i + j] = tmp[j * decoder.channels + k];
 				}
+			}
+			if (got < blockSize)
+			{
+				shrinkPlanar(mData, decoder.channels, mSampleCount, i + got);
+				mSampleCount = i + got;
+				break;
 			}
 		}
 		drmp3_uninit(&decoder);
@@ -302,13 +325,19 @@ namespace SoLoud
 		{
 			float tmp[512 * MAX_CHANNELS];
 			unsigned int blockSize = (mSampleCount - i) > 512 ? 512 : mSampleCount - i;
-			drflac_read_pcm_frames_f32(decoder, blockSize, tmp);
-			for (j = 0; j < blockSize; j++)
+			unsigned int got = (unsigned int)drflac_read_pcm_frames_f32(decoder, blockSize, tmp);
+			for (j = 0; j < got; j++)
 			{
 				for (k = 0; k < decoder->channels; k++)
 				{
 					mData[k * mSampleCount + i + j] = tmp[j * decoder->channels + k];
 				}
+			}
+			if (got < blockSize)
+			{
+				shrinkPlanar(mData, decoder->channels, mSampleCount, i + got);
+				mSampleCount = i + got;
+				break;
 			}
 		}
 		drflac_close(decoder);
