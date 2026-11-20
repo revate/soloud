@@ -2429,6 +2429,13 @@ static DRFLAC_INLINE drflac_bool32 drflac__read_uint32(drflac_bs* bs, unsigned i
         if (!drflac__reload_cache(bs)) {
             return DRFLAC_FALSE;
         }
+        /* REVATE (upstream v0.13.x fix): at end of stream the reloaded unaligned tail can hold fewer bits than
+           bitCountLo; consuming them anyway pushed consumedBits past the cache size, after which every read
+           "succeeded" with zeros until the 32-bit counter wrapped (~2^32 iterations, a 1-14 s stall per corrupt
+           FLAC frame; the audioconv fuzz timeout of 2026-11-20). */
+        if (bitCountLo > DRFLAC_CACHE_L1_BITS_REMAINING(bs)) {
+            return DRFLAC_FALSE;
+        }
 
         *pResultOut = (resultHi << bitCountLo) | (drflac_uint32)DRFLAC_CACHE_L1_SELECT_AND_SHIFT(bs, bitCountLo);
         bs->consumedBits += bitCountLo;
